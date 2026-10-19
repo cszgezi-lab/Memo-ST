@@ -1,4 +1,4 @@
-# Memo · 酒馆版 1.0.0
+# Memo · 酒馆版 1.0.1
 
 安装地址：https://github.com/cszgezi-lab/Memo-ST
 
