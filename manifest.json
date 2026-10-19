@@ -1,0 +1,30 @@
+{
+  "name": "Memo-ST",
+  "display_name": "Memo",
+  "author": "Shiyi Memory",
+  "description": "Memo 酒馆版：记忆、人物与召回，独立存储和连接。",
+  "version": "1.0.0",
+  "homePage": "https://github.com/cszgezi-lab/Memo-ST",
+  "auto_update": true,
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "ui/product-view.css",
+  "entry": "index.js",
+  "style": "ui/product-view.css",
+  "hooks": {
+    "activate": "onActivate",
+    "enable": "onEnable",
+    "disable": "onDisable",
+    "delete": "onDelete"
+  },
+  "permissions": [],
+  "dataPolicy": {
+    "chatCreation": false,
+    "automaticInjection": "enabled-by-default-configurable",
+    "credentials": "device-local-separate-store",
+    "network": "configured-provider-actions-and-automatic-summary"
+  },
+  "minimum_client_version": "1.17.0"
+}
