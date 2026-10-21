@@ -2,6 +2,7 @@ import { HostAdapter } from './host-adapter.js';
 import { ShiyiError } from './errors.js';
 import { clone, sha256, stableStringify } from './utils.js';
 import { createSTStorage } from './st-storage.js';
+import {STLegacyReadStore} from './st-legacy-storage.js';
 
 const IDENTITY_ADDRESS = Object.freeze({ namespace: 'memo-st-identities', key: 'registry-v1' });
 const error = (message, code) => new ShiyiError(message, code);
@@ -41,6 +42,7 @@ export class SillyTavernHostAdapter extends HostAdapter {
     this.identityQueues = new Map();
     this.renameUnsubscribe = null;
     this.lastIdentifiedRef = null;
+    this.legacyStores=new Map();
   }
   async ready() { return undefined; }
   async _account() {
@@ -125,10 +127,29 @@ export class SillyTavernHostAdapter extends HostAdapter {
     if (found.value?.version !== 1 || !found.value.records || typeof found.value.records !== 'object' || Array.isArray(found.value.records)) throw error('Memo聊天身份记录损坏，未新建空记忆。', 'PERSISTENCE_UNAVAILABLE');
     return found.value;
   }
+  _legacyStore(scope,guard){return new STLegacyReadStore({scope,indexedDB:this.indexedDB,deviceStorage:this.deviceStorage,backend:this.storageBackend,fetchImpl:this.fetchImpl,getRequestHeaders:()=>this._headers(),guard});}
+  async legacyGlobalStore(){const accountId=await this._account();if(!this.legacyStores.has(accountId))this.legacyStores.set(accountId,this._legacyStore({accountId,edition:'sillytavern',scope:'extension'},()=>this._assertAccount(accountId)));return this.legacyStores.get(accountId);}
+  async _legacyIdentity(ref){
+    const store=await this.legacyGlobalStore(),found=await store.tryGetJson({namespace:'shiyi-st-identities',key:'registry-v1'});await this._assertCurrent(ref);if(!found.found)return null;
+    const registry=found.value;if(registry?.version!==1||!registry.records||typeof registry.records!=='object'||Array.isArray(registry.records))throw error('旧拾忆聊天身份记录损坏，未新建空记忆','PERSISTENCE_UNAVAILABLE');const record=registry.records[locatorKey(ref)];if(!record)return null;
+    if(!Number.isSafeInteger(record.generation)||record.generation<0||typeof record.integrity!=='string'||!/^st-chat-[a-f0-9]{64}$/.test(record.stableId)||typeof record.retired!=='boolean')throw error('旧拾忆聊天身份记录无效','PERSISTENCE_UNAVAILABLE');return !record.retired&&record.integrity===ref.integrity?record:null;
+  }
+  async _adoptLegacyIdentity(ref,registry){
+    const existing=this._record(registry,ref);if(existing?.legacySource==='shiyi-st-v1'&&!existing.retired&&existing.integrity===ref.integrity)return registry;
+    const legacy=await this._legacyIdentity(ref);if(!legacy)return registry;
+    const candidate=this._resolve(registry,ref).stableId,scope={chatId:candidate},raw=createSTStorage({scope:{accountId:ref.accountId,edition:'memo-st',chatId:candidate},indexedDB:this.indexedDB,deviceStorage:this.deviceStorage,backend:this.storageBackend,fetchImpl:this.fetchImpl,getRequestHeaders:()=>this._headers(),locks:this.locks,guard:()=>this._assertCurrent(ref)});
+    const pointer=await raw.tryGetJson({namespace:'memo-st-shiyi-product-memory',key:'scope-'+sha256(stableStringify(scope)).slice(0,32)+'-pointer'});if(pointer.found)return registry;
+    for(const name of ['summary-batches','dynamic-persona']){const row=await raw.tryGetJson({namespace:'memo-st-shiyi-product-workspace',key:sha256(scope).slice(0,24)+'-'+name}),v=row.value;if(row.found&&(Array.isArray(v)?v.length>0:Boolean(v&&(v.profiles?.length||v.batches?.length||v.manualPlan))))return registry;}
+    return this._serialIdentity(ref.accountId,async()=>{await this._assertCurrent(ref);const current=await this._registry(ref.accountId);if(stableStringify(current)!==stableStringify(registry))throw error('Memo聊天身份在接续期间变化，请重试','CHAT_IDENTITY_NOT_READY');current.records[locatorKey(ref)]={...clone(legacy),legacySource:'shiyi-st-v1'};await this._extensionStore(ref.accountId).setJson({...IDENTITY_ADDRESS,value:current});return current;});
+  }
+  async legacyMemorySource(session){
+    const ref=session.ref;await this._assertCurrent(ref);const registry=await this._registry(ref.accountId),record=this._record(registry,ref);if(record?.legacySource!=='shiyi-st-v1'||record.stableId!==session.stableId)return null;
+    const scope={accountId:ref.accountId,edition:'sillytavern',chatId:record.stableId},store=this._legacyStore(scope,()=>this._assertCurrent(ref));this.legacyStores.set('chat:'+refKey(ref),store);return {store,scope:session.scope};
+  }
   _record(registry, ref) {
     const record = registry.records[locatorKey(ref)];
     if (!record) return null;
-    if (!Number.isSafeInteger(record.generation) || record.generation < 0 || typeof record.integrity !== 'string' || !/^memo-st-chat-[a-f0-9]{64}$/.test(record.stableId) || typeof record.retired !== 'boolean') throw error('Memo聊天身份记录格式无效。', 'PERSISTENCE_UNAVAILABLE');
+    if (!Number.isSafeInteger(record.generation) || record.generation < 0 || typeof record.integrity !== 'string' || !(record.legacySource==='shiyi-st-v1'?/^st-chat-[a-f0-9]{64}$/:/^memo-st-chat-[a-f0-9]{64}$/).test(record.stableId) || typeof record.retired !== 'boolean') throw error('Memo聊天身份记录格式无效。', 'PERSISTENCE_UNAVAILABLE');
     return record;
   }
   _resolve(registry, ref) {
@@ -182,8 +203,9 @@ export class SillyTavernHostAdapter extends HostAdapter {
       await this._assertCurrent(ref);
       if (!stableId) {
         initialSnapshot = await this._readPersisted(ref);
-        const registry = await this._registry(ref.accountId);
+        let registry = await this._registry(ref.accountId);
         await this._assertNoPendingRename(registry, ref);
+        registry=await this._adoptLegacyIdentity(ref,registry);
         stableId = this._resolve(registry, ref).stableId;
         await this._assertCurrent(ref);
         this.lastIdentifiedRef = ref;
@@ -367,7 +389,7 @@ export class SillyTavernHostAdapter extends HostAdapter {
     this.renameUnsubscribe = () => { unsubscribe(); this.renameUnsubscribe = null; };
     return this.renameUnsubscribe;
   }
-  dispose() { this.renameUnsubscribe?.(); }
+  async dispose() { this.renameUnsubscribe?.();for(const store of this.legacyStores.values())await store.close();this.legacyStores.clear(); }
 }
 
 export const STAdapter = SillyTavernHostAdapter;
