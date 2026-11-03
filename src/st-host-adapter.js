@@ -202,8 +202,12 @@ export class SillyTavernHostAdapter extends HostAdapter {
     const identify = async () => {
       await this._assertCurrent(ref);
       if (!stableId) {
-        initialSnapshot = await this._readPersisted(ref);
         let registry = await this._registry(ref.accountId);
+        const known=this._record(registry,ref);
+        // A previously saved identity can open its local archive without
+        // downloading the full JSONL. History consumers still verify the
+        // persisted body and integrity before continuing or injecting.
+        if(!known||known.retired||known.integrity!==ref.integrity)initialSnapshot=await this._readPersisted(ref);
         await this._assertNoPendingRename(registry, ref);
         registry=await this._adoptLegacyIdentity(ref,registry);
         stableId = this._resolve(registry, ref).stableId;
