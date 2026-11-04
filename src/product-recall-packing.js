@@ -4,6 +4,7 @@ import { tokenizeChinese } from './retrieval.js';
 import { dictionaryQuery } from './product-dictionary.js';
 import { foldName } from './persona-identity.js';
 import { sceneClockFromMessages } from './temporal.js';
+import { evidenceTerms } from './source-recall-evidence.js';
 
 // Wall time includes time in background or with the process suspended. It is
 // not CPU time. Older logs without this probe cannot recover that distinction.
@@ -206,6 +207,22 @@ export function recallSelectionReason(candidate) {
     tag_local: '标签匹配', category_local: '分类检索', vector_optional: '语义匹配', entity_exact: '人物精确匹配' };
   const channels = [...new Set((candidate.channels ?? []).map(c => names[c] ?? (/bm25/i.test(c) ? '关键词匹配' : '相关候选')))];
   return channels.join('、') || '相关候选';
+}
+
+// Match the record's own proposition. Attached events, source floors and
+// dictionary expansion are useful context, but cannot establish a direct hit.
+export function structuredRecallMatch(record, tokens, personNames) {
+  if (!['events','entityFactChanges','relationshipChanges','commitmentChanges','personaChanges'].includes(record.category)) return false;
+  const own = [record.title, record.description, record.recallSummary, record.field, record.fieldLabel,
+    record.content, record.aspect, typeof record.to==='string' && record.category==='entityFactChanges' ? record.to : '']
+    .filter(Boolean).join('\n').toLocaleLowerCase();
+  return hasSubstantiveRecallMatch(own,evidenceTerms(record,tokens,personNames));
+}
+
+export function hasSubstantiveRecallMatch(text, tokens) {
+  const terms = tokens.filter(term=>text.includes(term));
+  if (terms.some(term=>[...term].length>=3)) return true;
+  return terms.some((term,index)=>terms.slice(index+1).some(other=>![...term].some(ch=>other.includes(ch))));
 }
 
 // When semantic reranking is unavailable, independent questions must not
